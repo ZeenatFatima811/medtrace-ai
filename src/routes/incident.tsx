@@ -252,8 +252,10 @@ function IncidentPage() {
             {status ? <><Loader2 className="h-4 w-4 animate-spin" /> {status}</> : "Analyze & build report"}
           </Button>
           {error && (
-            <div role="alert" className="flex gap-2 rounded-md border border-destructive bg-card p-3 text-sm text-destructive">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> <span>{error}</span>
+            <div role="alert" className="space-y-2 rounded-md border border-destructive bg-card p-3 text-sm text-destructive">
+              <p className="flex gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> <span>{error}</span></p>
+              <p className="text-muted-foreground">Your image and details are still here — nothing was lost.</p>
+              <Button variant="outline" size="sm" disabled={!!status} onClick={run}>Retry Analysis</Button>
             </div>
           )}
         </div>
