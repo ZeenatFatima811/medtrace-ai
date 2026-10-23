@@ -28,9 +28,24 @@ export type Findings = {
   followUpQuestions: string[];
 };
 
+export type AnalyzeFailureCategory =
+  | "invalid_request"
+  | "auth"
+  | "rate_limited"
+  | "overloaded"
+  | "timeout"
+  | "network"
+  | "unknown";
+
 export type AnalyzeResult =
   | { ok: true; findings: Findings; model: string }
-  | { ok: false; code: "missing_key" | "invalid_input" | "api_error" | "unparseable"; error: string };
+  | {
+      ok: false;
+      code: "missing_key" | "invalid_input" | "api_error" | "unparseable";
+      error: string;
+      category?: AnalyzeFailureCategory;
+      retryable?: boolean;
+    };
 
 export type ManualPage = { page: number; text: string };
 
