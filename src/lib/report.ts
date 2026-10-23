@@ -31,6 +31,7 @@ export function buildHypotheses(f: Findings, d: DeviceDetails, s: ManualSearchRe
 }
 
 export async function downloadReportPdf(r: IncidentReport) {
+  const t0 = performance.now();
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
@@ -81,4 +82,5 @@ export async function downloadReportPdf(r: IncidentReport) {
   write("Escalate to a qualified biomedical engineer for verification. Follow hospital procedures for equipment in clinical use. Do not rely on this report as a diagnosis or repair instruction.");
 
   doc.save(`medtrace-${r.id}.pdf`);
+  console.info(`[incident] pdfMs=${(performance.now() - t0).toFixed(0)}`);
 }

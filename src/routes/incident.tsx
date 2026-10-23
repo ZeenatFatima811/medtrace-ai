@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { AlertTriangle, BookOpen, FileDown, ImageUp, Loader2, Printer, ShieldCheck, Upload } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { analyzeErrorScreen } from "@/lib/analyze.functions";
+import { classifyGeminiError, createSingleFlight } from "@/lib/gemini-errors";
+import { prepareImageForAnalysis, type PreparedImage } from "@/lib/image-prepare";
 import { searchManual } from "@/lib/manual-search";
 import { buildHypotheses, downloadReportPdf, NO_EVIDENCE, type IncidentReport } from "@/lib/report";
 import {
@@ -46,16 +48,31 @@ const EMPTY: DeviceDetails = { manufacturer: "", deviceType: "", modelNumber: ""
 
 type ManualChoice = { kind: "none" } | { kind: "sample" } | { kind: "file"; file: File };
 
-const fileToBase64 = (f: File) =>
-  new Promise<string>((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(",")[1] ?? "");
-    r.onerror = () => rej(new Error("Could not read image"));
-    r.readAsDataURL(f);
-  });
+// Module-level caches so re-running an analysis never re-reads the same manual
+// or re-encodes the same image.
+const manualCache = new Map<string, ManualPage[]>();
+const imageCache = new WeakMap<File, Promise<PreparedImage>>();
+
+const getManualPages = async (key: string, load: () => Promise<ArrayBuffer>): Promise<ManualPage[]> => {
+  const hit = manualCache.get(key);
+  if (hit) return hit;
+  const pages = await (await import("@/lib/pdf-extract")).extractPdfPages(await load());
+  manualCache.set(key, pages);
+  return pages;
+};
+
+const getPreparedImage = (f: File): Promise<PreparedImage> => {
+  let p = imageCache.get(f);
+  if (!p) {
+    p = prepareImageForAnalysis(f);
+    imageCache.set(f, p);
+  }
+  return p;
+};
 
 function IncidentPage() {
   const analyze = useServerFn(analyzeErrorScreen);
+  const flightRef = useRef<ReturnType<typeof createSingleFlight>>(null);
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [details, setDetails] = useState<DeviceDetails>(EMPTY);
@@ -96,23 +113,27 @@ function IncidentPage() {
     setManual({ kind: "sample" });
   };
 
-  const run = async () => {
+  const runOnce = async () => {
     if (!image) return setError("Upload an error-screen image first.");
+    const t0 = performance.now();
     setError(null);
     setReport(null);
     const warn: string[] = [];
     try {
       let pages: ManualPage[] | null = null;
       let manualName: string | null = null;
+      let manualMs = 0;
       if (manual.kind !== "none") {
         setStatus("Extracting manual text…");
-        const buf =
-          manual.kind === "sample"
-            ? await (await fetch(SAMPLE_MANUAL.url)).arrayBuffer()
-            : await manual.file.arrayBuffer();
+        const t = performance.now();
         manualName = manual.kind === "sample" ? SAMPLE_MANUAL.name : manual.file.name;
+        const key = manual.kind === "sample" ? SAMPLE_MANUAL.url : `${manual.file.name}:${manual.file.size}`;
+        const load =
+          manual.kind === "sample"
+            ? async () => (await fetch(SAMPLE_MANUAL.url)).arrayBuffer()
+            : () => manual.file.arrayBuffer();
         try {
-          pages = await (await import("@/lib/pdf-extract")).extractPdfPages(buf);
+          pages = await getManualPages(key, load);
           if (!pages.some((p) => p.text.length > 20)) {
             warn.push("The manual has no extractable text (it may be a scanned PDF). OCR is not supported in this MVP, so no manual evidence can be cited.");
           }
@@ -120,19 +141,28 @@ function IncidentPage() {
           warn.push("The manual PDF could not be read. It may be corrupted or password-protected.");
           pages = [];
         }
+        manualMs = performance.now() - t;
       }
 
       setStatus(`Reading the error screen with ${MODEL_ID}…`);
-      const res = await analyze({ data: { imageBase64: await fileToBase64(image), mimeType: image.type, details } });
+      const tPrep = performance.now();
+      const prepared = await getPreparedImage(image);
+      const prepMs = performance.now() - tPrep;
+      const tApi = performance.now();
+      const res = await analyze({ data: { imageBase64: prepared.base64, mimeType: prepared.mimeType, details } });
+      const apiMs = performance.now() - tApi;
       if (!res.ok) {
+        console.info(`[incident] failed prepMs=${prepMs.toFixed(0)} apiMs=${apiMs.toFixed(0)}`);
         setError(res.error);
         return;
       }
 
       setStatus("Searching manual for evidence…");
+      const tSearch = performance.now();
       const search = pages
         ? searchManual(pages, res.findings.errorCodes, details.modelNumber || res.findings.visibleDeviceInfo.model)
         : null;
+      const searchMs = performance.now() - tSearch;
       setWarnings(warn);
       setReport({
         id: Date.now().toString(36).toUpperCase(),
@@ -145,12 +175,25 @@ function IncidentPage() {
         search,
         hypotheses: buildHypotheses(res.findings, details, search),
       });
+      console.info(
+        `[incident] ok manualMs=${manualMs.toFixed(0)} prepMs=${prepMs.toFixed(0)} resized=${prepared.resized} apiMs=${apiMs.toFixed(0)} searchMs=${searchMs.toFixed(0)} totalMs=${(performance.now() - t0).toFixed(0)}`,
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
+      // Network/RPC failures never reach the server handler, so classify them
+      // here too instead of showing raw browser messages like "Failed to fetch".
+      setError(classifyGeminiError(e).userMessage);
     } finally {
       setStatus(null);
     }
   };
+
+  // Single-flight guard: clicks (or the Retry button) while an analysis is
+  // running are ignored instead of launching duplicate API requests. The guard
+  // always delegates to the latest runOnce so it never captures stale state.
+  const runOnceRef = useRef(runOnce);
+  runOnceRef.current = runOnce;
+  if (!flightRef.current) flightRef.current = createSingleFlight(() => runOnceRef.current());
+  const run = () => flightRef.current!.run();
 
   return (
     <AppShell>
@@ -211,8 +254,10 @@ function IncidentPage() {
             {status ? <><Loader2 className="h-4 w-4 animate-spin" /> {status}</> : "Analyze & build report"}
           </Button>
           {error && (
-            <div role="alert" className="flex gap-2 rounded-md border border-destructive bg-card p-3 text-sm text-destructive">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> <span>{error}</span>
+            <div role="alert" className="space-y-2 rounded-md border border-destructive bg-card p-3 text-sm text-destructive">
+              <p className="flex gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> <span>{error}</span></p>
+              <p className="text-muted-foreground">Your image and details are still here — nothing was lost.</p>
+              <Button variant="outline" size="sm" disabled={!!status} onClick={run}>Retry Analysis</Button>
             </div>
           )}
         </div>
