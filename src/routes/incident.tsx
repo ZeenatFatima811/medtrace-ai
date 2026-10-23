@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { analyzeErrorScreen } from "@/lib/analyze.functions";
-import { createSingleFlight } from "@/lib/gemini-errors";
+import { classifyGeminiError, createSingleFlight } from "@/lib/gemini-errors";
 import { prepareImageForAnalysis, type PreparedImage } from "@/lib/image-prepare";
 import { searchManual } from "@/lib/manual-search";
 import { buildHypotheses, downloadReportPdf, NO_EVIDENCE, type IncidentReport } from "@/lib/report";
@@ -179,7 +179,9 @@ function IncidentPage() {
         `[incident] ok manualMs=${manualMs.toFixed(0)} prepMs=${prepMs.toFixed(0)} resized=${prepared.resized} apiMs=${apiMs.toFixed(0)} searchMs=${searchMs.toFixed(0)} totalMs=${(performance.now() - t0).toFixed(0)}`,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
+      // Network/RPC failures never reach the server handler, so classify them
+      // here too instead of showing raw browser messages like "Failed to fetch".
+      setError(classifyGeminiError(e).userMessage);
     } finally {
       setStatus(null);
     }
