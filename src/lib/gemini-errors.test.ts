@@ -22,6 +22,14 @@ describe("classifyGeminiError", () => {
     expect(classifyGeminiError(apiError(503))).toMatchObject({ category: "overloaded", status: 503, retryable: true });
   });
 
+  it("classifies the provider's intermittent bare 500 as retryable", () => {
+    expect(classifyGeminiError(apiError(500, "Internal error encountered."))).toMatchObject({
+      category: "overloaded",
+      status: 500,
+      retryable: true,
+    });
+  });
+
   it("classifies aborts and timeout messages as retryable timeouts", () => {
     expect(classifyGeminiError(Object.assign(new Error("aborted"), { name: "AbortError" }))).toMatchObject({
       category: "timeout",

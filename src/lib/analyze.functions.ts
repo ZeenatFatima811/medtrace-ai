@@ -83,7 +83,6 @@ export const analyzeErrorScreen = createServerFn({ method: "POST" })
           ],
           config: {
             httpOptions: { timeout: API_TIMEOUT_MS },
-            maxOutputTokens: MAX_OUTPUT_TOKENS,
           },
         }),
       );
