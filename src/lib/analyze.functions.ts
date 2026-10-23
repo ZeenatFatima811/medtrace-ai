@@ -12,7 +12,9 @@ import {
 type Input = { imageBase64: string; mimeType: string; details: DeviceDetails };
 
 const API_TIMEOUT_MS = 90_000; // generous bound for image analysis; aborts only on genuine stalls
-const MAX_OUTPUT_TOKENS = 1024; // the response schema is compact; cap avoids runaway output
+// No maxOutputTokens cap: the prompt itself constrains the response to a small
+// JSON object, and a hard cap risks truncating the JSON mid-object (verified
+// against the live model), which makes the response unparseable.
 
 const PROMPT = (d: DeviceDetails) => `You are assisting a hospital biomedical engineering team with DOCUMENTATION of a medical-device error screen.
 Describe only what is visibly present in the image. Do NOT diagnose, do NOT give repair or clinical instructions, do NOT guess the meaning of error codes.

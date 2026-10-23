@@ -64,6 +64,16 @@ export function classifyGeminiError(err: unknown): ClassifiedGeminiError {
       userMessage: "The model service is temporarily overloaded (HTTP 503). Wait a moment, then use Retry Analysis.",
     };
   }
+  if (status === 500) {
+    // The provider intermittently returns bare 500 "Internal error encountered."
+    // responses that succeed on a retry — treat as transient.
+    return {
+      category: "overloaded",
+      status,
+      retryable: true,
+      userMessage: "The model service hit a temporary internal error (HTTP 500). Wait a moment, then use Retry Analysis.",
+    };
+  }
   if (/timed? ?out|deadline exceeded|ETIMEDOUT/i.test(msg)) {
     return {
       category: "timeout",
