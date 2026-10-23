@@ -1,5 +1,7 @@
 # MedTrace AI
 
+**Live Demo:** [Open MedTrace AI](https://medtrace-ai.lovable.app)
+
 **From Device Error to Evidence-Based Action.**
 
 MedTrace AI is a hackathon MVP that helps hospital biomedical engineering teams *document* medical-device incidents. Upload a photo of a device error screen, optionally add device details and a manufacturer manual (PDF), and get a structured incident report that separates:
