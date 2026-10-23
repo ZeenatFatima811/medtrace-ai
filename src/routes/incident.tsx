@@ -72,6 +72,7 @@ const getPreparedImage = (f: File): Promise<PreparedImage> => {
 
 function IncidentPage() {
   const analyze = useServerFn(analyzeErrorScreen);
+  const flightRef = useRef<ReturnType<typeof createSingleFlight>>(null);
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [details, setDetails] = useState<DeviceDetails>(EMPTY);
