@@ -48,13 +48,27 @@ const EMPTY: DeviceDetails = { manufacturer: "", deviceType: "", modelNumber: ""
 
 type ManualChoice = { kind: "none" } | { kind: "sample" } | { kind: "file"; file: File };
 
-const fileToBase64 = (f: File) =>
-  new Promise<string>((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(",")[1] ?? "");
-    r.onerror = () => rej(new Error("Could not read image"));
-    r.readAsDataURL(f);
-  });
+// Module-level caches so re-running an analysis never re-reads the same manual
+// or re-encodes the same image.
+const manualCache = new Map<string, ManualPage[]>();
+const imageCache = new WeakMap<File, Promise<PreparedImage>>();
+
+const getManualPages = async (key: string, load: () => Promise<ArrayBuffer>): Promise<ManualPage[]> => {
+  const hit = manualCache.get(key);
+  if (hit) return hit;
+  const pages = await (await import("@/lib/pdf-extract")).extractPdfPages(await load());
+  manualCache.set(key, pages);
+  return pages;
+};
+
+const getPreparedImage = (f: File): Promise<PreparedImage> => {
+  let p = imageCache.get(f);
+  if (!p) {
+    p = prepareImageForAnalysis(f);
+    imageCache.set(f, p);
+  }
+  return p;
+};
 
 function IncidentPage() {
   const analyze = useServerFn(analyzeErrorScreen);
