@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { AlertTriangle, BookOpen, FileDown, ImageUp, Loader2, Printer, ShieldCheck, Upload } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { analyzeErrorScreen } from "@/lib/analyze.functions";
+import { createSingleFlight } from "@/lib/gemini-errors";
+import { prepareImageForAnalysis, type PreparedImage } from "@/lib/image-prepare";
 import { searchManual } from "@/lib/manual-search";
 import { buildHypotheses, downloadReportPdf, NO_EVIDENCE, type IncidentReport } from "@/lib/report";
 import {
