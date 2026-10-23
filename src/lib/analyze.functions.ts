@@ -1,16 +1,18 @@
 import { createServerFn } from "@tanstack/react-start";
+import { classifyGeminiError, sanitizeLogMessage, withSingleRetry } from "./gemini-errors";
+import { clip, parseFindings } from "./parse-findings";
 import {
   ALLOWED_IMAGE_TYPES,
   MAX_IMAGE_BYTES,
   MODEL_ID,
   type AnalyzeResult,
   type DeviceDetails,
-  type Findings,
 } from "./types";
 
 type Input = { imageBase64: string; mimeType: string; details: DeviceDetails };
 
-const clip = (v: unknown, n = 500) => (typeof v === "string" ? v.slice(0, n) : "");
+const API_TIMEOUT_MS = 90_000; // generous bound for image analysis; aborts only on genuine stalls
+const MAX_OUTPUT_TOKENS = 1024; // the response schema is compact; cap avoids runaway output
 
 const PROMPT = (d: DeviceDetails) => `You are assisting a hospital biomedical engineering team with DOCUMENTATION of a medical-device error screen.
 Describe only what is visibly present in the image. Do NOT diagnose, do NOT give repair or clinical instructions, do NOT guess the meaning of error codes.
@@ -28,34 +30,6 @@ Return ONLY a JSON object with exactly these keys:
   "followUpQuestions": string[]    // questions a biomedical engineer should ask to document this incident
 }
 If the image is not a device screen or is unreadable, set confidence "low" and explain in uncertaintyNotes.`;
-
-function parseFindings(text: string): Findings | null {
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try {
-    const j = JSON.parse(m[0]);
-    const arr = (v: unknown) => (Array.isArray(v) ? v.filter((x) => typeof x === "string").map((x) => clip(x)) : []);
-    const s = (v: unknown) => (typeof v === "string" && v.trim() ? clip(v, 200) : null);
-    const conf = ["high", "medium", "low"].includes(j.confidence) ? j.confidence : "low";
-    return {
-      visibleDeviceInfo: {
-        manufacturer: s(j.visibleDeviceInfo?.manufacturer),
-        deviceType: s(j.visibleDeviceInfo?.deviceType),
-        model: s(j.visibleDeviceInfo?.model),
-        serial: s(j.visibleDeviceInfo?.serial),
-      },
-      errorCodes: arr(j.errorCodes).slice(0, 10),
-      visibleErrorText: arr(j.visibleErrorText).slice(0, 10),
-      screenDescription: clip(j.screenDescription, 800),
-      confidence: conf,
-      uncertaintyNotes: clip(j.uncertaintyNotes, 800),
-      unreadable: arr(j.unreadable).slice(0, 10),
-      followUpQuestions: arr(j.followUpQuestions).slice(0, 8),
-    };
-  } catch {
-    return null;
-  }
-}
 
 export const analyzeErrorScreen = createServerFn({ method: "POST" })
   .inputValidator((input: Input) => {
@@ -87,35 +61,46 @@ export const analyzeErrorScreen = createServerFn({ method: "POST" })
           "GEMINI_API_KEY is not configured on the server. Create a key at https://aistudio.google.com/apikey and add it as a server secret (or to .env when running locally).",
       };
     }
+    const t0 = Date.now();
+    const imageBytes = Math.round(data.imageBase64.length * 0.75);
     try {
       const { GoogleGenAI } = await import("@google/genai");
       const ai = new GoogleGenAI({ apiKey });
-      const res = await ai.models.generateContent({
-        model: MODEL_ID,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType: data.mimeType, data: data.imageBase64 } },
-              { text: PROMPT(data.details) },
-            ],
+      const tApi = Date.now();
+      const res = await withSingleRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_ID,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType: data.mimeType, data: data.imageBase64 } },
+                { text: PROMPT(data.details) },
+              ],
+            },
+          ],
+          config: {
+            httpOptions: { timeout: API_TIMEOUT_MS },
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
           },
-        ],
-      });
+        }),
+      );
+      const apiMs = Date.now() - tApi;
+      const tParse = Date.now();
       const findings = parseFindings(res.text ?? "");
+      console.info(
+        `[analyze] ok imageBytes=${imageBytes} apiMs=${apiMs} parseMs=${Date.now() - tParse} totalMs=${Date.now() - t0}`,
+      );
       if (!findings)
         return { ok: false, code: "unparseable", error: "Gemma 4 responded, but not in the expected format. Please try again." };
       return { ok: true, findings, model: MODEL_ID };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("Gemma call failed:", msg.slice(0, 300));
-      const hint = /API key|401|403|PERMISSION/i.test(msg)
-        ? " Check that GEMINI_API_KEY is valid and has access to Gemma models."
-        : /404|not found/i.test(msg)
-          ? ` Model ${MODEL_ID} was not found for this key.`
-          : /429|quota/i.test(msg)
-            ? " Rate limit or quota reached — wait a minute and retry."
-            : "";
-      return { ok: false, code: "api_error", error: `Gemma 4 request failed.${hint}` };
+      const c = classifyGeminiError(e);
+      // Server-side diagnostics keep the real status and category; the message is
+      // sanitized so no API key or request URL can reach the logs or the browser.
+      console.error(
+        `[analyze] failed category=${c.category} status=${c.status ?? "n/a"} totalMs=${Date.now() - t0} msg=${sanitizeLogMessage(e instanceof Error ? e.message : String(e))}`,
+      );
+      return { ok: false, code: "api_error", error: c.userMessage, category: c.category, retryable: c.retryable };
     }
   });
