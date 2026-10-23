@@ -186,9 +186,11 @@ function IncidentPage() {
   };
 
   // Single-flight guard: clicks (or the Retry button) while an analysis is
-  // running are ignored instead of launching duplicate API requests.
-  if (!flightRef.current) flightRef.current = createSingleFlight(runOnce);
-  else (flightRef.current as { fn?: unknown }).fn = undefined;
+  // running are ignored instead of launching duplicate API requests. The guard
+  // always delegates to the latest runOnce so it never captures stale state.
+  const runOnceRef = useRef(runOnce);
+  runOnceRef.current = runOnce;
+  if (!flightRef.current) flightRef.current = createSingleFlight(() => runOnceRef.current());
   const run = () => flightRef.current!.run();
 
   return (
